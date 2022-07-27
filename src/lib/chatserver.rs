@@ -11,13 +11,23 @@ async fn clean_line(l: String) -> String {
     line
 }
 
-async fn add_session(server: &mut ChatServer, handle: &String) -> Vec<String> {
-    server.sessions.push(handle.to_string());
-    server.sessions.clone()
+async fn update_sessions (sessions: &mut Vec<String>, message_type:MessageType, param:String){
+    match message_type {
+        MessageType::JOIN => {
+            sessions.push(param);
+        },
+        MessageType::LEAVE => {
+            sessions.retain(|x| x != &param);
+        },
+        _ => unimplemented!(),
+    }
 }
 
-async fn remove_session(server: &mut ChatServer, handle: &String){
-    server.sessions.retain(|x| x!= handle);
+#[derive(Debug, Copy, Clone)]
+enum MessageType {
+    MSG,
+    JOIN,
+    LEAVE,
 }
 
 pub struct ChatServer {
@@ -28,25 +38,26 @@ pub struct ChatServer {
 
 impl ChatServer {
     pub fn new(host: String, port: u16) -> ChatServer {
-        ChatServer { host, port, sessions: Vec::new() }
+        ChatServer { host, port, sessions:Vec::new() }
     }
 
-    pub async fn serve(mut self) {
+    pub async fn serve(self) {
         let listener = TcpListener::bind(format!("{}:{}", self.host, self.port)).await.unwrap();
         let (tx, _rx) = broadcast::channel(10);
+        let sessions:Vec<String> = Vec::new();
         loop {
             let (mut socket, addr) = listener.accept().await.unwrap();
             let chat_handle = format!("yourname_{}", &addr);
             let tx = tx.clone();
             let mut rx = tx.subscribe();
-            let sessions = add_session(&mut self, &chat_handle).await;
+            let mut sessions = sessions.clone();
             tokio::spawn(async move{
                 let (read_s, mut write_s) = socket.split();
                 let mut reader = BufReader::new(read_s);
                 let mut line = format!("{} joined.\r\n", chat_handle);
                 let msg = format!("welcome {}.\r\n", chat_handle);
                 write_s.write_all(msg.as_bytes()).await.unwrap();
-                tx.send((line.clone(), addr)).unwrap();
+                tx.send((line.clone(), addr, MessageType::JOIN, chat_handle.clone())).unwrap();
                 println!("CHATLOG: {} joined.", chat_handle);
                 loop {
                     tokio::select! {
@@ -59,14 +70,13 @@ impl ChatServer {
                                         let msg = format!("bye {}", chat_handle);
                                         let line = format!("{} left the chat.\r\n", chat_handle);
                                         write_s.write_all(msg.as_bytes()).await.unwrap();
-                                        tx.send((line.clone(), addr)).unwrap();
+                                        tx.send((line.clone(), addr, MessageType::LEAVE, chat_handle.clone())).unwrap();
                                         println!("CHATLOG: {} left the chat", chat_handle);
-                                        //remove_session(&mut self, &chat_handle).await;
                                         break;
                                     },
                                     'l' => {
                                         for s in sessions.iter() {
-                                            println!("SESS: {}.", s);
+                                            println!("SESSION: {}", s);
                                         }
                                     },
                                     _ => {
@@ -75,14 +85,21 @@ impl ChatServer {
                                     }
                                 }
                             } else {
-                                tx.send((format!("{}: {}", chat_handle, line.clone()), addr)).unwrap();
+                                tx.send((format!("{}: {}", chat_handle, line.clone()), addr, MessageType::MSG, String::new())).unwrap();
                                 line.clear();
                             }
                         }
                         result = rx.recv() => {
-                            let (msg, other_addr) = result.unwrap();
-                            if addr != other_addr {
-                                write_s.write_all(msg.as_bytes()).await.unwrap();
+                            let (msg, other_addr, message_type, param) = result.unwrap();
+                            match message_type {
+                                MessageType::MSG => {
+                                    if addr != other_addr {
+                                        write_s.write_all(msg.as_bytes()).await.unwrap();
+                                    }
+                                },
+                                _ => {
+                                    update_sessions(&mut sessions, message_type, param).await;
+                                }
                             }
                         }
                     }
