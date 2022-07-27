@@ -10,17 +10,28 @@ async fn clean_line(l: String) -> String {
     }
     line
 }
+
+async fn add_session(server: &mut ChatServer, handle: &String) -> Vec<String> {
+    server.sessions.push(handle.to_string());
+    server.sessions.clone()
+}
+
+async fn remove_session(server: &mut ChatServer, handle: &String){
+    server.sessions.retain(|x| x!= handle);
+}
+
 pub struct ChatServer {
     host: String,
     port: u16,
+    sessions: Vec<String>,
 }
 
 impl ChatServer {
     pub fn new(host: String, port: u16) -> ChatServer {
-        ChatServer { host, port }
+        ChatServer { host, port, sessions: Vec::new() }
     }
 
-    pub async fn serve(self) {
+    pub async fn serve(mut self) {
         let listener = TcpListener::bind(format!("{}:{}", self.host, self.port)).await.unwrap();
         let (tx, _rx) = broadcast::channel(10);
         loop {
@@ -28,6 +39,7 @@ impl ChatServer {
             let chat_handle = format!("yourname_{}", &addr);
             let tx = tx.clone();
             let mut rx = tx.subscribe();
+            let sessions = add_session(&mut self, &chat_handle).await;
             tokio::spawn(async move{
                 let (read_s, mut write_s) = socket.split();
                 let mut reader = BufReader::new(read_s);
@@ -49,17 +61,23 @@ impl ChatServer {
                                         write_s.write_all(msg.as_bytes()).await.unwrap();
                                         tx.send((line.clone(), addr)).unwrap();
                                         println!("CHATLOG: {} left the chat", chat_handle);
+                                        //remove_session(&mut self, &chat_handle).await;
                                         break;
+                                    },
+                                    'l' => {
+                                        for s in sessions.iter() {
+                                            println!("SESS: {}.", s);
+                                        }
                                     },
                                     _ => {
                                         let msg = format!("no such command '{}'\r\n", command);
                                         write_s.write_all(msg.as_bytes()).await.unwrap();
                                     }
                                 }
+                            } else {
+                                tx.send((format!("{}: {}", chat_handle, line.clone()), addr)).unwrap();
+                                line.clear();
                             }
-
-                            tx.send((format!("{}: {}", chat_handle, line.clone()), addr)).unwrap();
-                            line.clear();
                         }
                         result = rx.recv() => {
                             let (msg, other_addr) = result.unwrap();
